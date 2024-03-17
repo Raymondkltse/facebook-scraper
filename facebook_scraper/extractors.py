@@ -1,7 +1,5 @@
 import itertools
 import json
-import time
-
 import demjson3 as demjson
 from demjson3 import JSONDecodeError
 import logging
@@ -11,7 +9,7 @@ from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, urlparse
 from tqdm.auto import tqdm
 from collections import defaultdict
-
+import time
 from . import utils, exceptions
 from .constants import FB_BASE_URL, FB_MOBILE_BASE_URL, FB_W3_BASE_URL, FB_MBASIC_BASE_URL
 from .fb_types import Options, Post, RawPost, RequestFunction, Response, URL
@@ -106,7 +104,6 @@ class PostExtractor:
         self._live_data = {}
         self.extra_info = extra_info
         self.scraper = kwargs['scraper']
-        self.image_hop_timeout = self.options.get('image_hop_timeout', None)
 
     # TODO: This is getting ugly, create a dataclass for Post
     def make_new_post(self) -> Post:
@@ -163,7 +160,9 @@ class PostExtractor:
         }
 
     def extract_post(self) -> Post:
+        
         """Parses the element into self.item"""
+        logging.debug("extract_post (ec) is CALLED")
 
         methods = [
             self.extract_post_url,
@@ -196,6 +195,7 @@ class PostExtractor:
         # TODO: this is just used by `extract_reactions`, probably should not be acceded from self
         self.post = post
 
+
         def log_warning(msg, *args):
             post_id = self.post.get('post_id', 'unknown post')
             logger.warning(f"[%s] {msg}", post_id, *args)
@@ -212,7 +212,24 @@ class PostExtractor:
                 raise
             except Exception as ex:
                 log_warning("Exception while running %s: %r", method.__name__, ex)
-
+                
+        #my part
+        
+        if post['user_id'] == 'profile.php' and post['user_url'] != None:
+            theText = post['user_url']
+            post['user_id'] = theText[theText.find('.com/profile.php?id=')+len('.com/profile.php?id='):theText.find('&')]
+        
+        if post['user_id'] == None and post['user_url'] != None:
+            print("Oh USer_id is none, user_url = " + post['user_url'])
+            theText = post['user_url']
+            post['user_id'] = theText[theText.find('.com/')+len('.com/'):theText.find('?')]
+            
+        else:
+            if post['user_id'] == None:
+                print("Oh user_url is none")
+            else:
+                print("Oh User_id is NOT none" + post['user_id'])
+                
         has_more = self.more_url_regex.search(self.element.html)
         if has_more and self.full_post_html:
             post['source'] = self.full_post_html.find('.story_body_container', first=True)
@@ -375,7 +392,7 @@ class PostExtractor:
                             post_text.append(node.text)
                         else:
                             shared_text.append(node.text)
-
+                 
                 if ('is_truncated_text' not in texts):
                     more_button = content.find(self.post_more_button_selector)
                     if len(more_button) > 0:
@@ -420,6 +437,7 @@ class PostExtractor:
     # TODO: Add the correct timezone
     def extract_time(self) -> PartialPost:
         # Try to extract time for timestamp
+        logger.debug(f"******** extract time (et) is called \\\\\\\\\\\\\\\\\\")
         page_insights = self.data_ft.get('page_insights', {})
 
         for page in page_insights.values():
@@ -433,17 +451,26 @@ class PostExtractor:
                 continue
 
         # Try to extract from the abbr element
+        logger.debug(f"et: self.element ... "+str(self.element))
         date_element = self.element.find('abbr', first=True)
+        #logger.debug(f"et: ...find date0.1")
         if date_element is not None:
+            #logger.debug(f"et: ...find date0.2")
+            logger.debug("et: date_element.text:" +date_element.text)
+            #logger.debug(date_element.text)
             date = utils.parse_datetime(date_element.text, search=False)
             if date:
+                logger.debug(f"et: find date: " + str(date))
+                
                 return {'time': date}
             logger.debug("Could not parse date: %s", date_element.text)
         else:
+            logger.debug(f"et: find date2")
             logger.warning("Could not find the abbr element for the date")
 
         # Try to look in the entire text
         date = utils.parse_datetime(self.element.text)
+        logger.debug(f"******** extract time (et) is ENDED \\\\\\\\\\\\\\\\\\")
         if date:
             return {'time': date}
 
@@ -451,12 +478,12 @@ class PostExtractor:
             date_element = self.full_post_html.find("abbr[data-store*='time']", first=True)
             time = json.loads(date_element.attrs["data-store"])["time"]
             logger.debug(
-                f"Got exact timestamp from abbr[data-store]: {datetime.fromtimestamp(time)}"
+                f"et: Got exact timestamp from abbr[data-store]: {datetime.fromtimestamp(time)}"
             )
             return {'time': datetime.fromtimestamp(time), 'timestamp': time}
         except:
             return None
-
+        
     def extract_user_id(self) -> PartialPost:
         return {
             'user_id': self.data_ft['content_owner_id_new'],
@@ -594,7 +621,7 @@ class PostExtractor:
             or 0,
         }
 
-    def extract_photo_link_HQ(self, response, useMbasic=False, mbasicUrl=None) -> URL:
+    def extract_photo_link_HQ(self, html: str, useMbasic=False, mbasicUrl=None) -> URL:
         # As of Jan 2024 the mobile headers & mbasic method is the only reliable way of getting HQ images
         # the m.facebook method is left as a fallback. if you don't get images using useMbasic attribute,
         # please set it to false
@@ -602,7 +629,7 @@ class PostExtractor:
             logger.debug(f"using mbasic to get HQ image")
             logger.debug(f"fetching mbasicURl {mbasicUrl}")
             try:
-                redirect_response = self.request(mbasicUrl) if mbasicUrl else response
+                redirect_response = self.request(mbasicUrl)
                 url = (
                     redirect_response.html.find("#objects_container img[src][width][height].img", first=True)
                     .attrs.get("src")
@@ -613,7 +640,7 @@ class PostExtractor:
                 logger.error(e)
         else:
             # Find a link that says "View Full Size"
-            match = self.image_regex.search(response.text)
+            match = self.image_regex.search(html)
             if match:
                 url = match.groups()[0].replace("&amp;", "&")
                 if not url.startswith("http"):
@@ -634,6 +661,7 @@ class PostExtractor:
             else:
                 return None
     def extract_photo_link(self) -> PartialPost:
+        logger.debug("extract_photo_link is called")
         if not self.options.get("allow_extra_requests", True) or not self.options.get(
             "HQ_images", True
         ):
@@ -658,7 +686,7 @@ class PostExtractor:
         if len(photo_links) in [4, 5] and photo_links[-1].text:
             total_photos_in_gallery = len(photo_links) + int(photo_links[-1].text.strip("+")) - 1
             logger.debug(f"{total_photos_in_gallery} total photos in gallery")
-        response = ''
+
         # This gets up to 4 images in gallery
         for link in photo_links:
             url = link.attrs["href"]
@@ -701,56 +729,45 @@ class PostExtractor:
                     "videos": videos,
                 }
             url = utils.urljoin(FB_MOBILE_BASE_URL, url)
+            logger.debug(f"Fetching {url}")
             try:
-                # i am deprectaing the extra request to m.fb as it uses the number of requests allowed by fb for no use
-                #response = self.request(url)
+                response = self.request(url)
                 mbasicUrl = url = url.replace(FB_MOBILE_BASE_URL, FB_MBASIC_BASE_URL)
-                hqImage = self.extract_photo_link_HQ(None, useMbasic=True, mbasicUrl=mbasicUrl)
+                hqImage = self.extract_photo_link_HQ(response.text, useMbasic=True, mbasicUrl=mbasicUrl)
                 logger.info(f"hq image found {hqImage}")
                 images.append(hqImage)
-                #elem = response.html.find(".img[data-sigil='photo-image']", first=True)
-                #descriptions.append(elem.attrs.get("alt") or elem.attrs.get("aria-label"))
+                elem = response.html.find(".img[data-sigil='photo-image']", first=True)
+                descriptions.append(elem.attrs.get("alt") or elem.attrs.get("aria-label"))
                 image_ids.append(re.search(r'[=/](\d+)', url).group(1))
             except Exception as e:
                 logger.error(e)
                 total_photos_in_gallery -= 1
 
         errors = 0
-        logger.debug(f"images length {len(images)}")
-        last_image_url = utils.urljoin(FB_MBASIC_BASE_URL, photo_links.pop().attrs["href"])
-        logger.debug(f"last image url {last_image_url}")
-        last_image_response = self.request(last_image_url)
-        next_image_url = last_image_response.html.find(f'a[href^="/photo"]:contains("Next")', first=True)
-        post_has_more_hidden_images = next_image_url is not None
-        while post_has_more_hidden_images:
-            logger.debug(f'found next image url {next_image_url}')
-            if next_image_url:
-                url = next_image_url.attrs[
-                    "href"
-                ]
-                logger.debug(url)
-                # we can see the next button at the last page
-                if not url.startswith("http"):
-                    url = utils.urljoin(FB_MBASIC_BASE_URL, url)
-                logger.debug(f"Fetching Next image url {url}")
-                response = self.request(url)
-                photo_link = self.extract_photo_link_HQ(response, useMbasic=True)
-                # try to extract the next image_url from the new page
-                next_image_url = response.html.find(f'a[href^="/photo"]:contains("Next")', first=True)
-                if photo_link not in images:
-                    images.append(photo_link)
-                    # elem = response.html.find(".img[data-sigil='photo-image']", first=True)
-                    # descriptions.append(elem.attrs.get("alt") or elem.attrs.get("aria-label"))
-                    image_ids.append(re.search(r'[=/](\d+)', url).group(1))
-                else:
-                    errors += 1
-                    logger.error(f"found a photolink but duplicated {photo_link}")
-                # adding time delay to not hit facebook more than normal
-                if self.image_hop_timeout:
-                    logger.debug(f"will sleep for {self.image_hop_timeout} sec")
-                    time.sleep(self.image_hop_timeout)
+        while len(images) < total_photos_in_gallery:
+            # More photos to fetch. Follow the left arrow link of the last image we were on
+            direction = '{"tn":"+>"}'
+            if response.html.find("a", containing="Photos from", first=True):
+                # Right arrow link
+                direction = '{"tn":"+="}'
+            url = response.html.find(f"a.touchable[data-gt='{direction}']", first=True).attrs[
+                "href"
+            ]
+            if not url.startswith("http"):
+                url = utils.urljoin(FB_MOBILE_BASE_URL, url)
+            logger.debug(f"Fetching {url}")
+            response = self.request(url)
+            photo_link = self.extract_photo_link_HQ(response.text)
+            if photo_link not in images:
+                images.append(photo_link)
+                elem = response.html.find(".img[data-sigil='photo-image']", first=True)
+                descriptions.append(elem.attrs.get("alt") or elem.attrs.get("aria-label"))
+                image_ids.append(re.search(r'[=/](\d+)', url).group(1))
             else:
-                post_has_more_hidden_images = False
+                errors += 1
+                if errors > 5:
+                    logger.error("Reached image error limit")
+                    break
         image = images[0] if images else None
         image_id = image_ids[0] if image_ids else None
         return {
@@ -1138,7 +1155,7 @@ class PostExtractor:
 
     def parse_comment(self, comment):
         comment_id = comment.attrs.get("id")
-
+        logger.debug("*** pc: Step 11")
         try:
             profile_picture = comment.find(".profpic.img", first=True)
             name = profile_picture.attrs.get("alt") or profile_picture.attrs.get("aria-label")
@@ -1161,13 +1178,22 @@ class PostExtractor:
             "div:not([data-sigil])>a[href]:not([data-click]):not([data-store]):not([data-sigil])",
             first=True,
         )
+        
         comment_body_elem = comment.find(
-            'div:nth-child(1) > div:nth-child(1) > div', first=True
-        )
+                'div:nth-child(1) > div:nth-child(1) > div', first=True
+            )
+
         if not comment_body_elem:
             comment_body_elem = comment.find('div>div>div', first=True)
         if comment_body_elem:
             text = comment_body_elem.text
+            logger.debug(text)
+            if text == "":
+                comment_body_elem = comment.find('div[data-sigil="comment-body"]', first=True)
+                if comment_body_elem != None:
+                    text = comment_body_elem.text
+                else:
+                    logger.debug("pc: OOPS .. end of try(have no value)")
         else:
             text = comment.text
         commenter_meta = None
@@ -1184,9 +1210,13 @@ class PostExtractor:
         else:
             date = None
 
-        image_url = comment.find('a[href^="https://lm.facebook.com/l.php"]', first=True)
+        image_url = comment.find('a[href^="/photo.php"] img',first=True)
+        
+        
+        
+        
         if image_url:
-            image_url = parse_qs(urlparse(image_url.attrs["href"]).query).get("u")[0]
+            image_url = image_url.attrs["src"]
         else:
             image_url = comment.find('i.img:not(.profpic)[style]', first=True)
             if image_url:
@@ -1194,6 +1224,7 @@ class PostExtractor:
                 if match:
                     image_url = utils.decode_css_url(match.groups()[0])
 
+        
         reactions = {}
         comment_reactors_opt = self.options.get(
             "comment_reactors", self.options.get("reactions") or self.options.get("reactors")
@@ -1217,6 +1248,15 @@ class PostExtractor:
                 reactions_count = None
             reactions.update({"reaction_count": reactions_count})
 
+        
+        #my part
+        if url != None:
+            print("Oh commenter_id is none, url = " + url)
+            theText = url
+            commenter_id = theText[theText.find('.com/')+len('.com/'):theText.find('?')]
+            if commenter_id == 'profile.php':
+                commenter_id = theText[theText.find('.com/profile.php?id=')+len('.com/profile.php?id='):theText.find('&')]
+        
         return {
             "comment_id": comment_id,
             "comment_url": utils.urljoin(FB_BASE_URL, comment_id),
@@ -1233,9 +1273,11 @@ class PostExtractor:
         }
 
     def extract_comment_replies(self, replies_url):
+
         if not self.options.get("progress"):
-            logger.debug(f"Fetching {replies_url}")
+            logger.debug(f"ecr: Fetching {replies_url}")
         try:
+            logger.debug("*** ... trying ...")
             # Some users have to use an AJAX POST method to get replies.
             # Check if this is the case by checking for the element that holds the encrypted response token
             use_ajax_post = (
@@ -1243,30 +1285,53 @@ class PostExtractor:
             )
 
             if use_ajax_post:
+                logger.debug("*** ecr: ... Case A")
                 fb_dtsg = self.full_post_html.find("input[name='fb_dtsg']", first=True).attrs[
                     "value"
                 ]
-                encryptedAjaxResponseToken = re.search(
-                    r'encrypted":"([^"]+)', self.full_post_html.html
-                ).group(1)
+                logger.debug("*** ecr: ... Case A.1")
+                #encryptedAjaxResponseToken = re.search(r'encrypted":"([^"]+)', self.full_post_html.html).group(1)
+                
+                logger.debug("*** ecr: ... Case A.2")
+                #user_input = input('Stop, try get response ?' + replies_url)
+                logger.debug('Stop, try get response ?' + replies_url)
+                time.sleep(5) 
                 response = self.request(
-                    replies_url,
+                    #replies_url,
+                    'https://mbasic.facebook.com' + replies_url,
+                    #2024.02.29
                     post=True,
-                    params={"fb_dtsg": fb_dtsg, "__a": encryptedAjaxResponseToken},
+                    #params={"fb_dtsg": fb_dtsg, "__a": encryptedAjaxResponseToken},
+                    params={"fb_dtsg": fb_dtsg},
                 )
+                logger.debug("*** ecr: ... Case A.3")
+                #logger.debug("*** ecr: The response////////")
+                #logger.debug(response.text)
+                #logger.debug("*** ecr: \\\\\\The response")
             else:
+                logger.debug("*** ecr ... Case B")
                 use_ajax_post = False
                 response = self.request(replies_url)
 
         except exceptions.TemporarilyBanned:
             raise
         except Exception as e:
-            logger.error(e)
+            logger.debug("*** ecr ... other exception is triggered. Error Message:" + str(e))
+            #logger.error(e)
             return
 
-        if use_ajax_post:
+        logger.debug("ecr: Step 13")
+        #logger.debug("ecr: The main text: \\\\\\\\\\\\\\\\\\\\\\\\")
+        #logger.debug(response.text)
+        #logger.debug("ecr: The main text: ////////////")
+        if not use_ajax_post:
+            logger.debug("ecr: Step 13.1")
+            logger.debug("*** ecr: trying json from response")
             prefix_length = len('for (;;);')
             data = json.loads(response.text[prefix_length:])  # Strip 'for (;;);'
+            logger.debug("*** ecr: the data")
+            #logger.debug(data)
+            logger.debug("*** ecr: END OF data")
             for action in data['payload']['actions']:
                 if action["cmd"] == "replace":
                     html = utils.make_html_element(
@@ -1282,19 +1347,19 @@ class PostExtractor:
             replies = html.find(reply_selector)
 
         else:
-            # Skip first element, as it will be this comment itself
-            reply_selector = 'div[data-sigil="comment"]'
-            replies = response.html.find(reply_selector)[1:]
-
+            reply_selector = 'div[class="bd"]'
+            replies = response.html.find(reply_selector)[0:] #update from 1 to 0 , 2024.03.07
+            
         try:
-            for reply in replies:
+            for indexr,reply in enumerate(replies):
                 yield self.parse_comment(reply)
         except exceptions.TemporarilyBanned:
             raise
         except Exception as e:
-            logger.error(f"Unable to parse comment {replies_url} replies {replies}: {e}")
-
+            logger.error(f"Unable to parse comment replies {replies_url} replies {replies}: {e}")
+        logger.debug("*** extract_comment_replies is ENDED \\\\\\\\\\")
     def extract_comment_with_replies(self, comment):
+
         try:
             result = self.parse_comment(comment)
             result["replies"] = [
@@ -1302,15 +1367,18 @@ class PostExtractor:
                 for reply in comment.find("div[data-sigil='comment inline-reply']")
             ]
             replies_url = comment.find(
-                "div.async_elem[data-sigil='replies-see-more'] a[href], div[id*='comment_replies_more'] a[href]",
+                "div[id*='comment_replies_more'] a[href]",
                 first=True,
             )
             if replies_url:
+             
                 reply_generator = self.extract_comment_replies(replies_url.attrs["href"])
                 if result["replies"]:
                     result["replies"] = itertools.chain(result["replies"], reply_generator)
                 else:
                     result["replies"] = reply_generator
+            else:
+                logger.error("ecwr: Extracting the replies URL NOT success")
             return result
         except exceptions.TemporarilyBanned:
             raise
@@ -1320,6 +1388,8 @@ class PostExtractor:
     def extract_comments_full(self):
         """Fetch comments for an existing post obtained by `get_posts`.
         Note that this method may raise multiple http requests per post to get all comments"""
+
+        
         if not self.full_post_html:
             logger.error("Unable to get comments without full post HTML")
             return
@@ -1336,24 +1406,32 @@ class PostExtractor:
             logger.warning("No comments found on page")
             return
 
-        for comment in comments:
+        for indexc,comment in enumerate(comments):
+ 
             result = self.extract_comment_with_replies(comment)
             if result:
                 yield result
 
-        more_selector = f"div#see_next_{self.post.get('post_id')} a"
+
+        
+        more_selector = '[id*="see_next_"] a'
+        
         more = elem.find(more_selector, first=True)
+
         if not more:
             more_selector = f"div#see_prev_{self.post.get('post_id')} a"
             more = elem.find(more_selector, first=True)
 
         # Comment limiting and progress
         limit = 1e9  # Default
-        if more and more.attrs.get("data-ajaxify-href"):
-            parsed = parse_qs(urlparse(more.attrs.get("data-ajaxify-href")).query)
-            count = int(parsed.get("count")[0])
+
+        if more and more.attrs.get("href"):
+            parsed = parse_qs(urlparse(more.attrs.get("href")).query)
+            count = int(parsed.get("p")[0])
             if count < limit:
                 limit = count
+        else:
+            logger.debug("Not able to get comment - more.: ")
         comments_opt = self.options.get('comments')
         if type(comments_opt) in [int, float]:
             limit = comments_opt
@@ -1375,9 +1453,11 @@ class PostExtractor:
                         more.attrs.get("href")
                         + "&m_entstream_source=video_home&player_suborigin=entry_point&player_format=permalink"
                 )
+        else:
+            logger.debug("More comment is EMPTY")
         if self.options.get("comment_start_url"):
             more_url = self.options.get("comment_start_url")
-
+        
         while more_url and len(comments) <= limit:
             if request_url_callback:
                 request_url_callback(utils.urljoin(FB_MOBILE_BASE_URL, more_url))
@@ -1409,8 +1489,17 @@ class PostExtractor:
                 result = self.extract_comment_with_replies(comment)
                 if result:
                     yield result
+                    
+            logger.debug("Try finding the more(inside while) ... Start, Selector = " + more_selector)        
             more = elem.find(more_selector, first=True)
+            logger.debug("Try finding the more(inside while) ... END")        
             if more:
+                logger.debug("more is found..")
+            else:
+                logger.debug("more is NOT found..")
+
+            if more:
+                limit = 1e9  #20240310
                 if self.options.get("response_url"):
                     more_url = utils.combine_url_params(
                         self.options.get("response_url"), more.attrs.get("href")
